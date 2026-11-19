@@ -58,7 +58,7 @@ const EMIT_SYNTHESIS_TOOL: Anthropic.Tool = {
           ticker: { type: "string" },
           side: { type: "string", enum: ["buy", "sell"] },
           quantity: { type: "number" },
-          order_type: { type: "string", enum: ["market", "limit", "stop_market", "stop_limit"] },
+          order_type: { type: "string", description: "Share-sized buys require limit or stop_limit and a positive limit_price.", enum: ["market", "limit", "stop_market", "stop_limit"] },
           limit_price: { type: "number", description: "Required for limit and stop_limit orders." },
           stop_price: { type: "number", description: "Trigger price; required for stop_market and stop_limit orders." },
         },

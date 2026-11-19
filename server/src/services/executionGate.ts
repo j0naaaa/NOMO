@@ -5,11 +5,11 @@ import {
   createPendingOrder,
   expireStaleOrders,
   getPendingOrder,
-  markOrderExecuted,
+  trackOrder,
   markOrderFailed,
   rejectPendingOrder,
 } from "../db/pendingOrders.js";
-import { executeConfirmedOrder } from "./robinhoodMcp.js";
+import { executeConfirmedOrder, UncertainSubmission } from "./robinhoodMcp.js";
 
 /**
  * The confirmation gate. Claude's execution tool calls land in proposeOrder
@@ -305,16 +305,17 @@ export async function confirmOrder(id: string): Promise<GateActionResult> {
   const confirmed = getPendingOrder(id)!;
   try {
     const ack = await executeConfirmedOrder(confirmed);
-    markOrderExecuted(id, ack);
+    trackOrder(id, ack.state, ack.message, ack.brokerId);
     recordToolCall({
       toolName: confirmed.action === "cancel" ? "cancel_equity_order" : "place_equity_order",
       tier: "execution",
       params: { orderId: id, action: confirmed.action, ticker: confirmed.ticker, brokerRef: confirmed.brokerRef, side: confirmed.side, quantity: confirmed.quantity, orderType: confirmed.orderType, limitPrice: confirmed.limitPrice },
-      outcome: "executed",
+      outcome: ack.state,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Order placement failed.";
-    markOrderFailed(id, message);
+    if (err instanceof UncertainSubmission) trackOrder(id, "uncertain", message);
+    else markOrderFailed(id, message);
     recordToolCall({
       toolName: confirmed.action === "cancel" ? "cancel_equity_order" : "place_equity_order",
       tier: "execution",

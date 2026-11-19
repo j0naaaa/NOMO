@@ -1,5 +1,7 @@
 import { getDb } from "./index.js";
 
+import { seal, unseal } from "./secretBox.js";
+
 export type Provider = "anthropic" | "polygon";
 
 export function setCredential(provider: Provider, secret: string): void {
@@ -10,7 +12,7 @@ export function setCredential(provider: Provider, secret: string): void {
          secret = excluded.secret,
          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
     )
-    .run(provider, secret);
+    .run(provider, seal(provider, secret));
 }
 
 /** Stores all entries in one transaction so a partial write cannot occur. */
@@ -26,7 +28,7 @@ export function getCredential(provider: Provider): string | null {
   const row = getDb()
     .prepare("SELECT secret FROM credentials WHERE provider = ?")
     .get(provider) as { secret: string } | undefined;
-  return row ? row.secret : null;
+  return row ? unseal(provider, row.secret) : null;
 }
 
 /** Existence check that avoids reading the secret itself. */

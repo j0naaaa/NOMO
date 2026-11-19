@@ -8,6 +8,8 @@ import { getDb } from "./index.js";
  * or a confirm after expiry can never slip through.
  */
 
+import { getRobinhoodAccountNumber } from "./settings.js";
+
 const EXPIRY_MS = 5 * 60 * 1000;
 
 interface PendingOrderRow {
@@ -21,6 +23,7 @@ interface PendingOrderRow {
   limit_price: string | null;
   stop_price: string | null;
   broker_ref: string | null;
+  broker_state: PendingOrderStatus | null;
   rationale: string;
   status: PendingOrderStatus;
   created_at: string;
@@ -46,7 +49,7 @@ function toView(row: PendingOrderRow): PendingOrderView {
     stopPrice: row.stop_price,
     brokerRef: row.broker_ref,
     rationale: row.rationale,
-    status: row.status,
+    status: row.broker_state ?? row.status,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     result: row.result,
@@ -79,8 +82,8 @@ export function createPendingOrder(order: NewPendingOrder): PendingOrderView {
   const expiresAt = new Date(Date.now() + EXPIRY_MS).toISOString();
   getDb()
     .prepare(
-      `INSERT INTO pending_orders (id, action, ticker, side, quantity, dollar_amount, order_type, limit_price, stop_price, broker_ref, rationale, status, expires_at, thesis, bear_case, broker_warnings)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_confirmation', ?, ?, ?, ?)`,
+      `INSERT INTO pending_orders (id, action, ticker, side, quantity, dollar_amount, order_type, limit_price, stop_price, broker_ref, rationale, status, expires_at, thesis, bear_case, broker_warnings, selected_account)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_confirmation', ?, ?, ?, ?, ?)`,
     )
     .run(
       id,
@@ -98,6 +101,7 @@ export function createPendingOrder(order: NewPendingOrder): PendingOrderView {
       order.thesis ?? null,
       order.bearCase ?? null,
       order.brokerWarnings ?? null,
+      getRobinhoodAccountNumber(),
     );
   return getPendingOrder(id)!;
 }
@@ -135,7 +139,14 @@ function transition(id: string, from: PendingOrderStatus, to: PendingOrderStatus
 }
 
 export function confirmPendingOrder(id: string): boolean {
-  return transition(id, "awaiting_confirmation", "confirmed", { requireUnexpired: true });
+  // A stopped process can leave a preflight claim. Only expire claims which
+  // never crossed beginSubmission; delayed preflights must claim again to send.
+  getDb().prepare(`UPDATE pending_orders SET status='failed', result='Preflight timed out before submission'
+    WHERE status='confirmed' AND broker_state IS NULL AND expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')`).run();
+  return getDb().prepare(`UPDATE pending_orders SET status = 'confirmed' , resolved_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND status = 'awaiting_confirmation' AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    AND (action = 'cancel' OR NOT EXISTS (SELECT 1 FROM pending_orders WHERE status = 'confirmed'
+      AND action = 'place' AND broker_state IS NULL))`).run(id).changes === 1;
 }
 
 export function rejectPendingOrder(id: string, reason?: string | null): boolean {
@@ -159,10 +170,35 @@ export function listResolvedOrders(limit = 100): PendingOrderView[] {
   return rows.map(toView);
 }
 
-export function markOrderExecuted(id: string, result: string): boolean {
-  return transition(id, "confirmed", "executed", { result });
+export function orderBinding(id: string) {
+  return getDb().prepare("SELECT selected_account AS account, broker_order_id AS brokerId FROM pending_orders WHERE id = ?")
+    .get(id) as { account: string | null; brokerId: string | null };
+}
+
+export function trackOrder(id: string, state: PendingOrderStatus, message?: string, brokerId?: string) {
+  // Conditional updates prevent stale reads from reverting a terminal fill or a partial fill.
+  getDb().prepare(`UPDATE pending_orders SET status = 'executed', broker_state = ?,
+    result = COALESCE(?, result), broker_order_id = COALESCE(?, broker_order_id)
+    WHERE id = ? AND status IN ('confirmed','executed')
+    AND (broker_state IS NULL OR broker_state IN ('submitted','uncertain','partially_filled'))
+    AND NOT (COALESCE(broker_state,'') = 'partially_filled' AND ? = 'submitted')`)
+    .run(state, message ?? null, brokerId ?? null, id, state);
+}
+
+export function trackedOrders(account: string): PendingOrderView[] {
+  const found = getDb().prepare(`SELECT * FROM pending_orders WHERE (selected_account = ? OR selected_account IS NULL)
+    AND status IN ('confirmed','executed') AND (broker_state IS NULL OR broker_state IN ('submitted','uncertain','partially_filled'))`)
+    .all(account) as PendingOrderRow[];
+  return found.map(toView);
+}
+
+export function beginSubmission(id: string) {
+  const claimed = getDb().prepare(`UPDATE pending_orders SET broker_state = 'uncertain'
+    WHERE id = ? AND status = 'confirmed' AND broker_state IS NULL
+      AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')`).run(id);
+  if (!claimed.changes) throw new Error("Order confirmation expired before submission.");
 }
 
 export function markOrderFailed(id: string, error: string): boolean {
-  return transition(id, "confirmed", "failed", { result: error });
+  return getDb().prepare("UPDATE pending_orders SET status = 'failed', broker_state = NULL, result = ? WHERE id = ? AND status = 'confirmed'").run(error,id).changes === 1;
 }

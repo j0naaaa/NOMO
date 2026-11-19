@@ -12,6 +12,19 @@ import { adminRouter } from "./routes/admin.js";
 
 export function createApp(): Express {
   const app = express();
+  // Browsers on other origins must not control the local broker session.
+  app.use((req, res, next) => {
+    const localHosts = ["localhost", "127.0.0.1", "[::1]"];
+    const origin = req.headers.origin;
+    let originHost: string | undefined;
+    try { originHost = origin ? new URL(origin).hostname : undefined; } catch { originHost = "invalid"; }
+    if (!localHosts.includes(req.hostname) || (originHost && !localHosts.includes(originHost)) ||
+        (req.headers["sec-fetch-site"] === "cross-site" && !(req.method === "GET" && req.path === "/api/robinhood/callback"))) {
+      res.status(403).json({ error: "Open NOMO on localhost." });
+      return;
+    }
+    next();
+  });
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/api/health", (_req, res) => {

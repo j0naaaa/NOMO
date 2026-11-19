@@ -2,7 +2,20 @@ import { Router } from "express";
 import { confirmOrder, getOrder, rejectOrder } from "../services/executionGate.js";
 import { PortfolioActionError, proposeCancelOpenOrder, proposeClosePosition } from "../services/portfolio.js";
 
+import { refreshOrders } from "../services/robinhoodMcp.js";
+import { listResolvedOrders } from "../db/pendingOrders.js";
+
 export const ordersRouter = Router();
+
+ordersRouter.get("/", (_req, res) => res.json({ orders: listResolvedOrders() }));
+ordersRouter.post("/refresh", async (_req, res) => {
+  try {
+    await refreshOrders();
+    res.json({ orders: listResolvedOrders() });
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : "Broker refresh failed." });
+  }
+});
 
 // One-click close from the portfolio view. This only creates a pending
 // order; the user still confirms or rejects it like any other proposal.

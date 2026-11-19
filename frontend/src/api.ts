@@ -94,6 +94,13 @@ export async function updateTierSetting(tier: string, enabled: boolean): Promise
   if (!res.ok) throw new Error(`Failed to update tool settings (${res.status})`);
 }
 
+export async function orderHistory(refresh = false): Promise<PendingOrderView[]> {
+  const res = await fetch(refresh ? "/api/orders/refresh" : "/api/orders", { method: refresh ? "POST" : "GET" });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error ?? "Order history unavailable.");
+  return body.orders;
+}
+
 export async function fetchPositions(): Promise<PositionView[]> {
   const res = await fetch("/api/robinhood/positions");
   const body = (await res.json().catch(() => null)) as { positions?: PositionView[]; error?: string } | null;

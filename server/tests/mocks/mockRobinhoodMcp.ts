@@ -18,6 +18,7 @@ export interface MockRobinhood {
   reviewedOrders: Record<string, unknown>[];
   /** When true, review_equity_order returns an error so placement aborts. */
   reviewShouldFail: boolean;
+  hideLatestPlacement: boolean;
   close: () => Promise<void>;
 }
 
@@ -60,7 +61,7 @@ const READ_TOOLS: { name: string; description: string; inputSchema: Record<strin
     name: "get_equity_quotes",
     description: "Quotes for symbols",
     inputSchema: { type: "object", properties: { symbols: { type: "array", items: { type: "string" } } }, required: ["symbols"] },
-    result: { quotes: [{ symbol: "AAPL", last_trade_price: "236.35" }] },
+    result: { quotes: [{ symbol: "AAPL", last_trade_price: "236.35" }, { symbol: "NVDA", last_trade_price: "182.50" }] },
   },
   {
     name: "search",
@@ -92,7 +93,7 @@ export async function startMockRobinhood(port: number): Promise<MockRobinhood> {
   const placedOrders: Record<string, unknown>[] = [];
   const cancelledOrders: Record<string, unknown>[] = [];
   const reviewedOrders: Record<string, unknown>[] = [];
-  const state = { reviewShouldFail: false };
+  const state = { reviewShouldFail: false, hideLatestPlacement: false };
 
   function buildServer(): Server {
     const server = new Server({ name: "mock-robinhood-trading", version: "0.0.1" }, { capabilities: { tools: {} } });
@@ -169,6 +170,7 @@ export async function startMockRobinhood(port: number): Promise<MockRobinhood> {
       }
       if (request.params.name === "place_equity_order") {
         placedOrders.push(args);
+        if (state.hideLatestPlacement) return { content: [{type: "text", text: "Receipt unavailable"}] };
         return {
           content: [
             {
@@ -188,6 +190,12 @@ export async function startMockRobinhood(port: number): Promise<MockRobinhood> {
       const tool = READ_TOOLS.find((t) => t.name === request.params.name);
       if (!tool) {
         return { content: [{ type: "text", text: `unknown tool ${request.params.name}` }], isError: true };
+      }
+      if (tool.name === "get_equity_orders") {
+        const base = (tool.result as { orders: unknown[] }).orders;
+        const visible = state.hideLatestPlacement ? placedOrders.slice(0, -1) : placedOrders;
+        const history = visible.map((o, i) => ({ ...o, id: "RH-MOCK-" + (i + 1), state: "filled" }));
+        return { content: [{ type: "text", text: JSON.stringify({orders: [...base, ...history]}) }] };
       }
       return { content: [{ type: "text", text: JSON.stringify(tool.result) }] };
     });
@@ -216,6 +224,8 @@ export async function startMockRobinhood(port: number): Promise<MockRobinhood> {
     placedOrders,
     cancelledOrders,
     reviewedOrders,
+    get hideLatestPlacement() { return state.hideLatestPlacement; },
+    set hideLatestPlacement(value: boolean) { state.hideLatestPlacement = value; },
     get reviewShouldFail() {
       return state.reviewShouldFail;
     },

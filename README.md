@@ -111,15 +111,16 @@ Everything the agent learns is visible and yours to manage. Distilled lessons la
 ## Setup from a fresh clone
 
 ```sh
-git clone <this repo>
+git clone https://github.com/j0naaaa/NOMO.git
 cd NOMO
-npm install
+npm ci
+npm run setup:local
 npm run dev
 ```
 
-Open http://localhost:5173. On first run the app creates a local SQLite database and shows a setup screen:
+Open http://127.0.0.1:5173. On first run the app creates a local SQLite database and shows a setup screen:
 
-1. Enter your Anthropic API key and Polygon API key. Both are validated with a test call before being stored. They are saved in `server/data/app.db` on your machine and sent nowhere except to the respective provider.
+1. Enter your Anthropic API key and Polygon API key. Both are validated with a test call before being stored. They are encrypted in `server/data/app.db` on your machine and sent nowhere except to the respective provider.
 2. You can chat and render charts immediately after that.
 
 To connect Robinhood:
@@ -128,7 +129,15 @@ To connect Robinhood:
 2. In NOMO, open Settings and click Link Robinhood. A Robinhood authorization page opens; approve access there.
 3. Back in NOMO, settings shows the connected read only tools (accounts, portfolio, positions, orders, quotes, search). Only read tools are mapped automatically; trading goes through the confirmation gate.
 
-Environment configuration is optional. Copy `.env.example` to `.env` to change the port or model. API keys never live in `.env`.
+This fork runs on loopback. GitHub Actions builds and tests the code with a mock broker. Claude requests go to Anthropic, market-data requests go to the data providers, and linking Robinhood enables broker requests.
+
+**Local credentials.** `npm run setup:local` creates an owner-only root `.env` with a random 32-byte encryption key. Keep this file private and back it up separately from SQLite. Provider keys and Robinhood OAuth material use AES-256-GCM. For an existing `.env`, supply `NOMO_SECRET_KEY` through your secret manager or add a base64-encoded 32-byte random key. The next startup migrates existing credential rows. Earlier database backups may contain plaintext.
+
+**Equity limits.** Set positive USD amounts for `NOMO_MAX_ORDER_USD`, `NOMO_MAX_POSITION_USD`, and `NOMO_MAX_TOTAL_USD` in the root `.env` and restart. Leaving any limit blank disables placement. The last two limits cover long equity positions and outstanding equity buys in the selected account. Use a dedicated equities-only account for these limits. Dollar-sized market buys and share buys with a limit price have a maximum cost. Share-sized market buys have no price ceiling and are refused. Sell notionals for share orders use the broker quote at validation time. External order activity and market movements can change exposure after the check.
+
+**Order status.** Portfolio → Refresh broker status reads Robinhood's order records. The card distinguishes submission, partial fill, fill, cancellation, broker rejection and uncertain delivery. An uncertain placement blocks further placements until a matching broker record is available. Partial pages or broker responses with missing risk data block placement. If an ambiguous request never appears at Robinhood, inspect the broker history before any manual recovery.
+
+**Strategy and performance.** Research runs on request. Historical tests support buy and hold, moving-average crossover, price versus moving average, and RSI reversion. These are single-symbol simulations. The journal summarizes recorded closed trades and does not establish an independently verified live track record.
 
 ## Development
 

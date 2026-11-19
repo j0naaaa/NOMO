@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { OpenOrderView, PendingOrderView, PositionView } from "@nomo/shared";
-import { fetchOpenOrders, fetchPositions, proposeCancelOrder, proposeClosePosition } from "../api";
+import { orderHistory, fetchOpenOrders, fetchPositions, proposeCancelOrder, proposeClosePosition } from "../api";
 import OrderCard from "./OrderCard";
 
 interface Props {
@@ -35,6 +35,17 @@ export default function PortfolioView({ onBack }: Props) {
     load();
   }, [load]);
 
+  useEffect(() => {
+    orderHistory().then(setOrders).catch(err => setError(err.message));
+  }, []);
+  const refresh = async () => {
+    try {
+      const records = await orderHistory(true);
+      setOrders(current => [...current.filter(o => o.status === "awaiting_confirmation"), ...records]);
+      load();
+    } catch (err) { setError(err instanceof Error ? err.message : "Refresh failed."); }
+  };
+
   const close = async (symbol: string) => {
     setProposing(symbol);
     setError(null);
@@ -63,7 +74,7 @@ export default function PortfolioView({ onBack }: Props) {
 
   const updateOrder = (order: PendingOrderView) => {
     setOrders((current) => current.map((o) => (o.id === order.id ? order : o)));
-    if (order.status === "executed") load();
+    load();
   };
 
   const proposalIsLive = (o: PendingOrderView) =>
@@ -80,6 +91,7 @@ export default function PortfolioView({ onBack }: Props) {
   return (
     <div className="db-view">
       <header className="chat-header">
+        <button onClick={() => void refresh()}>Refresh broker status</button>
         <div className="chat-header-left">
           <button className="icon-button" onClick={onBack} aria-label="Back to chat" title="Back to chat">
             <BackIcon />

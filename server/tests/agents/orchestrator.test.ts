@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+process.env.NOMO_SECRET_KEY = randomBytes(32).toString("base64");
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import fs from "node:fs";

@@ -84,6 +84,9 @@ const TOOL_TIERS: Record<string, ToolTier> = {
   update_scan_config: "account_write",
 };
 
+import { brokerData, brokerStatus, checkExposure, dollarLimits, quoteMap, rows } from "./orderRisk.js";
+import { beginSubmission, orderBinding, trackedOrders, trackOrder } from "../db/pendingOrders.js";
+
 export const oauthProvider = new RobinhoodOAuthProvider();
 
 let client: Client | null = null;
@@ -178,14 +181,14 @@ export function isRetryable(err: unknown): boolean {
   return true;
 }
 
-async function callRobinhoodTool(name: string, input: unknown): Promise<unknown> {
+async function callRobinhoodTool(name: string, input: unknown, retry = true): Promise<unknown> {
   const args = (input ?? {}) as Record<string, unknown>;
   for (let attempt = 0; ; attempt++) {
     let mcpClient: Client;
     try {
       mcpClient = await ensureClient();
     } catch (err) {
-      if (attempt < RETRY_BACKOFF_MS.length && isRetryable(err)) {
+      if (retry && attempt < RETRY_BACKOFF_MS.length && isRetryable(err)) {
         await delay(RETRY_BACKOFF_MS[attempt]!);
         continue;
       }
@@ -205,7 +208,7 @@ async function callRobinhoodTool(name: string, input: unknown): Promise<unknown>
       // Transport failure: drop the stale client so the next attempt reconnects.
       if (client === mcpClient) client = null;
       void mcpClient.close().catch(() => undefined);
-      if (attempt < RETRY_BACKOFF_MS.length && isRetryable(err)) {
+      if (retry && attempt < RETRY_BACKOFF_MS.length && isRetryable(err)) {
         await delay(RETRY_BACKOFF_MS[attempt]!);
         continue;
       }
@@ -381,7 +384,7 @@ function requireAccountNumber(): string {
 
 /** Lists the linked account numbers for the settings picker (never auto-selected). */
 export async function listAccounts(): Promise<unknown> {
-  return callRobinhoodTool("get_accounts", {});
+  return brokerData(await callRobinhoodTool("get_accounts", {}));
 }
 
 /**
@@ -392,41 +395,89 @@ export async function listAccounts(): Promise<unknown> {
 export async function fetchEquityPositions(): Promise<unknown> {
   const account = getRobinhoodAccountNumber();
   const args = account ? { [ACCOUNT_FIELD]: account } : {};
-  return scrubAccountNumbers(await callRobinhoodTool("get_equity_positions", args), account);
+  return scrubAccountNumbers(brokerData(await callRobinhoodTool("get_equity_positions", args)), account);
 }
 
 /** Reads equity orders for the portfolio view's open-orders panel. Same UI-only contract as fetchEquityPositions. */
 export async function fetchEquityOrders(): Promise<unknown> {
   const account = getRobinhoodAccountNumber();
   const args = account ? { [ACCOUNT_FIELD]: account } : {};
-  return scrubAccountNumbers(await callRobinhoodTool("get_equity_orders", args), account);
+  return scrubAccountNumbers(brokerData(await callRobinhoodTool("get_equity_orders", args)), account);
 }
 
-/**
- * THE ONLY PATH to a Robinhood execution tool. It accepts nothing but a
- * stored pending order in confirmed status; parameters are taken from that
- * row and never from model output. Do not add another caller besides the
- * confirmation gate, and do not add a bypass.
- *
- * Argument names (symbol, side, order_type, order_id) are provisional until
- * validated against a real Robinhood link; a mismatch fails loudly on the
- * confirmation card rather than placing anything wrong.
- */
-export async function executeConfirmedOrder(order: PendingOrderView): Promise<string> {
-  if (order.status !== "confirmed") {
-    throw new Error(
-      `Refusing to execute order ${order.id}: status is ${order.status}, not confirmed.`,
-    );
-  }
+function matchRecord(order: PendingOrderView, records: Record<string, unknown>[]) {
+  const target = order.action === "cancel" ? order.brokerRef : orderBinding(order.id).brokerId;
+  return records.find(row => (target && (row.id === target || row.order_id === target)) ||
+    (order.action === "place" && row.ref_id === order.id));
+}
 
-  if (order.action === "cancel") {
-    if (!order.brokerRef) {
-      throw new Error(`Cancel order ${order.id} has no broker order reference.`);
-    }
-    return stringifyAck(await callRobinhoodTool("cancel_equity_order", { order_id: order.brokerRef }));
-  }
+function reconcile(order: PendingOrderView, records: Record<string, unknown>[]) {
+  const record = matchRecord(order, records);
+  if (!record || record.symbol !== order.ticker || (order.side && record.side !== order.side)) return false;
+  const state = brokerStatus(record.state);
+  trackOrder(order.id, state);
+  return state !== "uncertain";
+}
 
+export async function refreshOrders() {
   const account = requireAccountNumber();
+  const outstanding = trackedOrders(account);
+  if (outstanding.length) {
+    const records = rows(await callRobinhoodTool("get_equity_orders", {account_number: account}), "orders");
+    for (const order of outstanding) {
+      if (order.status !== "confirmed") reconcile(order, records);
+    }
+  }
+}
+
+async function checkBrokerRisk(order: PendingOrderView, account: string) {
+  const limits = dollarLimits();
+  const scope = { account_number: account };
+  const orders = rows(await callRobinhoodTool("get_equity_orders", scope), "orders");
+  for (const other of trackedOrders(account)) {
+    if (other.action === "place" && other.id !== order.id && !reconcile(other, orders)) {
+      throw new Error("An earlier placement is still unverified at the broker.");
+    }
+  }
+  const holdings = rows(await callRobinhoodTool("get_equity_positions", scope), "positions");
+  const symbols = new Set(holdings.filter(p => p.market_value == null).map(p => String(p.symbol)));
+  if (order.side === "sell") symbols.add(order.ticker);
+  const prices = symbols.size ? quoteMap(await callRobinhoodTool("get_equity_quotes", {symbols: [...symbols]})) : new Map<string, number>();
+  checkExposure(order, holdings, orders, prices, limits);
+}
+
+export class UncertainSubmission extends Error {}
+
+async function submit(tool: string, args: Record<string, unknown>, account: string) {
+  try {
+    const raw = await callRobinhoodTool(tool, args, false);
+    const data = brokerData(raw);
+    const record = brokerData(data.order ?? data);
+    const brokerId = record.order_id ?? record.id;
+    const state = brokerStatus(record.state);
+    return {state, brokerId: typeof brokerId === "string" ? brokerId : undefined,
+      message: stringifyAck(scrubAccountNumbers(data, account))};
+  } catch (error) {
+    if (error instanceof RobinhoodToolError) throw error;
+    throw new UncertainSubmission("Broker outcome unknown. Refresh the order before taking further action.");
+  }
+}
+
+export async function executeConfirmedOrder(order: PendingOrderView) {
+  if (order.status !== "confirmed") throw new Error(`Refusing to execute order: status is ${order.status}, not confirmed.`);
+  const account = requireAccountNumber();
+  if (orderBinding(order.id).account !== account) throw new Error("Account selection changed. Create a new proposal.");
+  if (order.action === "cancel") {
+    if (!order.brokerRef) throw new Error("Missing broker order reference.");
+    const records = rows(await callRobinhoodTool("get_equity_orders", { account_number: account }), "orders");
+    const target = matchRecord(order, records);
+    if (!target || target.symbol !== order.ticker || getRobinhoodAccountNumber() !== account) {
+      throw new Error("Cancellation target could not be verified in the selected account.");
+    }
+    beginSubmission(order.id);
+    return submit("cancel_equity_order", { order_id: order.brokerRef }, account);
+  }
+  await checkBrokerRisk(order, account);
   const args = buildOrderArgs({
     ticker: order.ticker,
     side: order.side,
@@ -445,14 +496,17 @@ export async function executeConfirmedOrder(order: PendingOrderView): Promise<st
   let reviewNote = "";
   if (availableToolNames.has("review_equity_order")) {
     const review = parseBrokerReview(await callRobinhoodTool("review_equity_order", args));
-    const notes = [...review.alerts, review.summary].filter(Boolean);
+    if (review.alerts.length) throw new Error(review.alerts.join(" "));
+    const notes = [review.summary].filter(Boolean);
     if (notes.length > 0) reviewNote = ` Reviewed before placing: ${notes.join(" ")}`;
   }
 
   // Scrub the account number from the broker ack before it is stored on the
   // order and shown in the app.
-  const ack = stringifyAck(scrubAccountNumbers(await callRobinhoodTool("place_equity_order", args), account));
-  return `${ack}${reviewNote}`;
+  if (getRobinhoodAccountNumber() !== account) throw new Error("Account selection changed.");
+  beginSubmission(order.id);
+  const receipt = await submit("place_equity_order", args, account);
+  return { ...receipt, message: receipt.message + reviewNote };
 }
 
 /**

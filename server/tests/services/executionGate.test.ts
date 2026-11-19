@@ -22,6 +22,9 @@ let memoriesDb: typeof import("../../src/db/memories.js");
 let registry: typeof import("../../src/tools/registry.js");
 
 before(async () => {
+  process.env.NOMO_MAX_ORDER_USD = "5000";
+  process.env.NOMO_MAX_POSITION_USD = "10000";
+  process.env.NOMO_MAX_TOTAL_USD = "20000";
   mock = await startMockRobinhood(MOCK_PORT);
   process.env.ROBINHOOD_MCP_URL = mock.url;
 
@@ -45,7 +48,8 @@ function propose(overrides: Record<string, unknown> = {}) {
     ticker: "AAPL",
     side: "buy",
     quantity: 1,
-    order_type: "market",
+    order_type: "limit",
+    limit_price: 250,
     rationale: "integration test order",
     ...overrides,
   });
@@ -73,7 +77,7 @@ test("propose rejects invalid input", () => {
   assert.throws(() => propose({ ticker: "not a ticker" }), /ticker/);
   assert.throws(() => propose({ side: "hold" }), /side/);
   assert.throws(() => propose({ quantity: -3 }), /quantity/);
-  assert.throws(() => propose({ order_type: "limit" }), /limit_price/);
+  assert.throws(() => propose({ order_type: "limit", limit_price: undefined }), /limit_price/);
   assert.throws(() => propose({ rationale: "  " }), /rationale/);
   assert.equal(mock.placedOrders.length, 0);
 });
@@ -83,7 +87,7 @@ test("confirm forwards exactly the stored parameters and records the ack", async
   const result = await gate.confirmOrder(order.id);
 
   assert.equal(result.ok, true);
-  assert.equal(result.order?.status, "executed");
+  assert.equal(result.order?.status, "submitted");
   assert.match(result.order?.result ?? "", /RH-MOCK/);
   assert.equal(mock.placedOrders.length, 1);
   assert.deepEqual(mock.placedOrders[0], {
@@ -109,7 +113,7 @@ test("a stop-limit order forwards the stop trigger and the limit price", async (
   assert.equal(order.orderType, "stop_limit");
   assert.equal(order.stopPrice, "203.3");
   const result = await gate.confirmOrder(order.id);
-  assert.equal(result.order?.status, "executed");
+  assert.equal(result.order?.status, "submitted");
   const placed = mock.placedOrders[mock.placedOrders.length - 1];
   assert.deepEqual(placed, {
     account_number: "MOCK-ACCT-1",
@@ -125,7 +129,7 @@ test("a stop-limit order forwards the stop trigger and the limit price", async (
 
 test("stop orders require a stop price, stop-limit also a limit price", () => {
   assert.throws(() => propose({ order_type: "stop_market" }), /stop_price/);
-  assert.throws(() => propose({ order_type: "stop_limit", stop_price: 200 }), /limit_price/);
+  assert.throws(() => propose({ order_type: "stop_limit", stop_price: 200, limit_price: undefined }), /limit_price/);
   assert.throws(() => propose({ order_type: "bracket" }), /order_type/);
 });
 
@@ -134,7 +138,7 @@ test("a dollar-amount market order forwards dollar_amount and no quantity", asyn
   assert.equal(order.dollarAmount, "100");
   assert.equal(order.quantity, null);
   const result = await gate.confirmOrder(order.id);
-  assert.equal(result.order?.status, "executed");
+  assert.equal(result.order?.status, "submitted");
   // The exact match proves quantity is absent: a dollar order sends no shares.
   assert.deepEqual(mock.placedOrders[mock.placedOrders.length - 1], {
     account_number: "MOCK-ACCT-1",
@@ -243,7 +247,7 @@ test("audit log records the full lifecycle", async () => {
     .getDb()
     .prepare("SELECT outcome FROM audit_log WHERE tool_name = 'place_equity_order' ORDER BY id DESC LIMIT 1")
     .all() as { outcome: string }[];
-  assert.equal(rows[0]?.outcome, "executed");
+  assert.equal(rows[0]?.outcome, "submitted");
 });
 
 test("cancel proposals validate their input", () => {
@@ -263,7 +267,7 @@ test("confirming a cancel calls cancel_equity_order with the stored broker ref a
   const cancelBefore = mock.cancelledOrders.length;
   const result = await gate.confirmOrder(order.id);
   assert.equal(result.ok, true);
-  assert.equal(result.order?.status, "executed");
+  assert.equal(result.order?.status, "canceled");
   assert.match(result.order?.result ?? "", /cancelled/);
   assert.equal(mock.cancelledOrders.length, cancelBefore + 1);
   assert.deepEqual(mock.cancelledOrders[mock.cancelledOrders.length - 1], { order_id: "RH-OPEN-1" });
@@ -279,7 +283,7 @@ test("when the MCP offers a review tool, a place is reviewed before being placed
   const { order } = propose({ ticker: "GOOG" });
   const result = await gate.confirmOrder(order.id);
 
-  assert.equal(result.order?.status, "executed");
+  assert.equal(result.order?.status, "submitted");
   assert.equal(mock.reviewedOrders.length, reviewBefore + 1);
   assert.equal(mock.placedOrders.length, placedBefore + 1);
   assert.match(result.order?.result ?? "", /Reviewed before placing/);
@@ -328,7 +332,7 @@ test("with adversarial memories present, the broker is still reached only via co
   const { order } = propose({ ticker: "MSFT" });
   assert.equal(mock.placedOrders.length, placedBefore);
   const result = await gate.confirmOrder(order.id);
-  assert.equal(result.order?.status, "executed");
+  assert.equal(result.order?.status, "submitted");
   assert.equal(mock.placedOrders.length, placedBefore + 1);
   dbModule.getDb().prepare("DELETE FROM memories").run();
 });
@@ -361,4 +365,57 @@ test("discovery registers read and account_write tools, never order tools", asyn
     assert.equal(byName.has(orderTool), false, `${orderTool} must not be a model tool`);
   }
   robinhoodMcp.unregisterRobinhoodTools();
+});
+
+test("a resting buy counts toward the broker position cap", async () => {
+  // AAPL is worth 2836.20 with an additional open buy of 390.
+  const old = process.env.NOMO_MAX_POSITION_USD;
+  process.env.NOMO_MAX_POSITION_USD = "3300";
+  try {
+    const before = mock.placedOrders.length;
+    const { order } = propose({ quantity: undefined, dollar_amount: 100, order_type: "market" });
+    const result = await gate.confirmOrder(order.id);
+    assert.equal(result.order?.status, "failed");
+    assert.match(result.order?.result ?? "", /exposure limit/);
+    assert.equal(mock.placedOrders.length, before);
+  } finally { process.env.NOMO_MAX_POSITION_USD = old; }
+});
+
+test("simultaneous confirmations submit at most one placement during preflight", async () => {
+  const first = propose().order;
+  const second = propose().order;
+  const before = mock.placedOrders.length;
+  const results = await Promise.all([gate.confirmOrder(first.id), gate.confirmOrder(second.id)]);
+  assert.equal(results.filter(r => r.ok).length, 1);
+  assert.equal(mock.placedOrders.length, before + 1);
+  assert.equal(gate.getOrder(first.id)?.status, "submitted");
+  await robinhoodMcp.refreshOrders();
+  assert.equal(gate.getOrder(first.id)?.status, "filled");
+});
+
+test("missing limits prevent the broker write", async () => {
+  const old = process.env.NOMO_MAX_ORDER_USD;
+  delete process.env.NOMO_MAX_ORDER_USD;
+  try {
+    const before = mock.placedOrders.length;
+    assert.equal((await gate.confirmOrder(propose().order.id)).order?.status, "failed");
+    assert.equal(mock.placedOrders.length, before);
+  } finally { process.env.NOMO_MAX_ORDER_USD = old; }
+});
+
+test("an ambiguous submission blocks further placements until an independent broker read resolves it", async () => {
+  const before = mock.placedOrders.length;
+  mock.hideLatestPlacement = true;
+  try {
+    const first = propose().order;
+    assert.equal((await gate.confirmOrder(first.id)).order?.status, "uncertain");
+    const second = await gate.confirmOrder(propose().order.id);
+    assert.equal(second.order?.status, "failed");
+    assert.match(second.order?.result ?? "", /unverified/);
+    assert.equal(mock.placedOrders.length, before + 1);
+    mock.hideLatestPlacement = false;
+    await robinhoodMcp.refreshOrders();
+    assert.equal(gate.getOrder(first.id)?.status, "filled");
+    assert.equal(mock.placedOrders.length, before + 1);
+  } finally { mock.hideLatestPlacement = false; }
 });

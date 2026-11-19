@@ -13,6 +13,12 @@ export type PendingOrderStatus =
   | "confirmed"
   | "rejected"
   | "expired"
+  | "submitted"
+  | "partially_filled"
+  | "filled"
+  | "canceled"
+  | "broker_rejected"
+  | "uncertain"
   | "executed"
   | "failed";
 

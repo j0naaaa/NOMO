@@ -16,6 +16,8 @@ import { getDb } from "../db/index.js";
  * the live authorization server metadata).
  */
 
+import { seal, unseal } from "../db/secretBox.js";
+
 const KEYS = {
   tokens: "robinhood_tokens",
   client: "robinhood_client",
@@ -27,7 +29,7 @@ function read(key: string): string | null {
   const row = getDb().prepare("SELECT secret FROM credentials WHERE provider = ?").get(key) as
     | { secret: string }
     | undefined;
-  return row ? row.secret : null;
+  return row ? unseal(key, row.secret) : null;
 }
 
 function write(key: string, value: string): void {
@@ -38,7 +40,7 @@ function write(key: string, value: string): void {
          secret = excluded.secret,
          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
     )
-    .run(key, value);
+    .run(key, seal(key, value));
 }
 
 function remove(key: string): void {

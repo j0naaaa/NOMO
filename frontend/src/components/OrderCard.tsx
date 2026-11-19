@@ -50,7 +50,13 @@ const STATUS_LABELS: Record<string, string> = {
   confirmed: "Confirming...",
   rejected: "Rejected",
   expired: "Expired without confirmation",
-  executed: "Executed",
+  executed: "Historical submission · fill unverified",
+  submitted: "Submitted",
+  partially_filled: "Partially filled",
+  filled: "Filled",
+  canceled: "Canceled",
+  broker_rejected: "Rejected or expired at broker",
+  uncertain: "Broker outcome unverified",
   failed: "Failed",
 };
 

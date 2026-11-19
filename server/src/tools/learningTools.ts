@@ -87,7 +87,7 @@ export function registerLearningTools(): void {
 
       const order = getPendingOrder(orderId);
       if (!order) throw new Error("No order with that id.");
-      if (order.status !== "executed") {
+      if (order.status !== "filled" || order.action !== "place") {
         throw new Error("Outcomes can only be recorded for orders that were confirmed and executed.");
       }
 

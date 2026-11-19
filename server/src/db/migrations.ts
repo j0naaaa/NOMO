@@ -252,6 +252,16 @@ const migrations: Migration[] = [
       );
     `,
   },
+  {
+    id: 16,
+    name: "broker-order-tracking",
+    sql: `
+      ALTER TABLE pending_orders ADD COLUMN broker_state TEXT;
+      ALTER TABLE pending_orders ADD COLUMN broker_order_id TEXT;
+      ALTER TABLE pending_orders ADD COLUMN selected_account TEXT;
+      UPDATE pending_orders SET broker_state = 'uncertain' WHERE status IN ('executed', 'confirmed');
+    `,
+  },
 ];
 
 export function runMigrations(db: Database): void {

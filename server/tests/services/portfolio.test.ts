@@ -28,6 +28,9 @@ function countPendingOrders(): number {
 }
 
 before(async () => {
+  process.env.NOMO_MAX_ORDER_USD = "5000";
+  process.env.NOMO_MAX_POSITION_USD = "10000";
+  process.env.NOMO_MAX_TOTAL_USD = "20000";
   mock = await startMockRobinhood(MOCK_PORT);
   process.env.ROBINHOOD_MCP_URL = mock.url;
 
@@ -108,7 +111,7 @@ test("confirming a close forwards exactly the stored parameters", async () => {
   const result = await gate.confirmOrder(order.id);
 
   assert.equal(result.ok, true);
-  assert.equal(result.order?.status, "executed");
+  assert.equal(result.order?.status, "submitted");
   assert.deepEqual(mock.placedOrders[mock.placedOrders.length - 1], {
     account_number: "MOCK-ACCT-1",
     symbol: "AAPL",
@@ -204,7 +207,7 @@ test("confirming a proposed cancel sends the stored broker reference", async () 
   const result = await gate.confirmOrder(order.id);
 
   assert.equal(result.ok, true);
-  assert.equal(result.order?.status, "executed");
+  assert.equal(result.order?.status, "canceled");
   assert.deepEqual(mock.cancelledOrders[mock.cancelledOrders.length - 1], { order_id: "RH-OPEN-1" });
 });
 

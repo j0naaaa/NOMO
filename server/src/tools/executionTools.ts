@@ -12,7 +12,7 @@ export function registerExecutionTools(): void {
     name: "place_equity_order",
     tier: "execution",
     description:
-      "Propose an equity order. This does NOT place the order: it creates a proposal the user must explicitly confirm in the app within 5 minutes, and the broker is only contacted after that confirmation. Size the order by share count (quantity, fractional allowed) OR by a dollar amount (dollar_amount, market orders only), never both. Supports stop and stop-limit orders. Always give a clear one or two sentence rationale.",
+      "Propose an equity order. This does NOT place the order: it creates a proposal the user must explicitly confirm in the app within 5 minutes, and the broker is only contacted after that confirmation. Size the order by share count (quantity, fractional allowed) OR by a dollar amount (dollar_amount, market orders only), never both. For share-sized buys use a limit or stop-limit with a maximum price. Always give a clear one or two sentence rationale.",
     inputSchema: {
       type: "object",
       properties: {

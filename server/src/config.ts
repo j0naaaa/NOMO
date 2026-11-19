@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 
+dotenv.config({ path: fileURLToPath(new URL("../../.env", import.meta.url)) });
 dotenv.config();
 
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");

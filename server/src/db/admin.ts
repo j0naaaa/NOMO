@@ -9,7 +9,7 @@ import { getDb } from "./index.js";
  * lives in credentials.secret, so redacting that one column name covers them.
  */
 
-const REDACT_COLUMNS = new Set(["secret"]);
+const REDACT_COLUMNS = new Set(["secret", "selected_account"]);
 const REDACTED = "[redacted]";
 const MAX_LIMIT = 200;
 

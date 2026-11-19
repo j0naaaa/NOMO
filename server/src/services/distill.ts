@@ -53,7 +53,7 @@ function parseCandidates(text: string): string[] {
 
 export async function distillLessons(): Promise<DistillResult> {
   const history = listResolvedOrders(100).filter(
-    (order) => order.status === "rejected" || order.status === "executed",
+    (order) => order.status === "rejected" || order.status === "filled",
   );
   if (history.length < MIN_HISTORY) {
     return {

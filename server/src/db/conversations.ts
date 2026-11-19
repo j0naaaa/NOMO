@@ -1,3 +1,4 @@
+import { getPendingOrder } from "./pendingOrders.js";
 import { randomUUID } from "node:crypto";
 import type { ConversationDetail, ConversationSummary, StoredMessage } from "@nomo/shared";
 import { getDb } from "./index.js";
@@ -43,7 +44,12 @@ export function getConversation(id: string): ConversationDetail | null {
 
   const messages: StoredMessage[] = rows.map((row) => ({
     role: row.role,
-    blocks: JSON.parse(row.blocks) as unknown[],
+    blocks: (JSON.parse(row.blocks) as unknown[]).map(block => {
+      const card = block as { kind?: string; order?: { id?: string } } | null;
+      if (card?.kind !== "order" || typeof card.order?.id !== "string") return block;
+      const current = getPendingOrder(card.order.id);
+      return current ? { ...card, order: current } : block;
+    }),
   }));
 
   return { id: summary.id, title: summary.title, createdAt: summary.created_at, updatedAt: summary.updated_at, messages };
